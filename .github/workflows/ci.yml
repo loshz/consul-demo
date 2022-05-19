@@ -30,7 +30,7 @@ jobs:
           go-version: ${{ env.GOVERSION }}
       - uses: golangci/golangci-lint-action@v2
         with:
-          version: v1.44
+          version: v1.46
           skip-go-installation: true
           skip-pkg-cache: true
           skip-build-cache: true
