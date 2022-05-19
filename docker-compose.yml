@@ -1,0 +1,45 @@
+version: "3.9"
+services:
+  consul-server:
+    image: consul:1.12
+    ports:
+    - 8080:8080
+    - 8400:8400
+    - 8600:8600
+    - 8600:8600/udp
+    command: agent -server -bootstrap-expect 1 -ui -client 0.0.0.0 -http-port 8080
+
+  consul-agent:
+    image: consul:1.12
+    ports:
+    - 8500:8500
+    depends_on:
+    - consul-server
+    command: agent -retry-join consul-server -client 0.0.0.0
+
+  consul-demo-0:
+    build: .
+    image: loshz/consul-demo
+    ports:
+    - 6000:6000
+    depends_on:
+    - consul-agent
+    command: -id=0 -port=6000
+  
+  consul-demo-1:
+    build: .
+    image: loshz/consul-demo
+    ports:
+    - 6001:6001
+    depends_on:
+    - consul-agent
+    command: -id=1 -port=6001
+
+  consul-demo-2:
+    build: .
+    image: loshz/consul-demo
+    ports:
+    - 6002:6002
+    depends_on:
+    - consul-agent
+    command: -id=2 -port=6002
