@@ -11,7 +11,7 @@ import (
 // and their dependencies.
 func NewHTTPServer(port int, stop chan os.Signal) *http.Server {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/healthz", handler)
+	mux.HandleFunc("/healthz", healthzHandler)
 
 	server := &http.Server{
 		Addr:    fmt.Sprintf(":%v", port),
@@ -36,7 +36,7 @@ func httpLog(r *http.Request, status int) {
 	log.Printf(`"%s %s %s" %d %s`, r.Method, r.URL.Path, r.Proto, status, http.StatusText(status))
 }
 
-func handler(rw http.ResponseWriter, r *http.Request) {
+func healthzHandler(rw http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		status := http.StatusMethodNotAllowed
 		http.Error(rw, http.StatusText(status), http.StatusMethodNotAllowed)

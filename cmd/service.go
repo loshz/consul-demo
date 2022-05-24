@@ -11,6 +11,8 @@ import (
 	consul "github.com/hashicorp/consul/api"
 )
 
+const svcName = "consul-demo"
+
 type Service struct {
 	// Unique Service ID.
 	id string
@@ -19,7 +21,7 @@ type Service struct {
 	addr string
 
 	// Consul client.
-	client *consul.Client
+	consul ConsulClient
 
 	// Local HTTP server.
 	server *http.Server
@@ -30,17 +32,17 @@ type Service struct {
 
 func NewService(id string, port int, stop chan os.Signal) (Service, error) {
 	s := Service{
-		id:   id,
+		id:   fmt.Sprintf("%s-%s", svcName, id),
 		addr: fmt.Sprintf("http://%v:%v", id, port),
 		stop: stop,
 	}
 
 	// configure consul client
 	config := &consul.Config{
-		Address: "consul-agent:8500",
+		Address: ConsulAgentAddr,
 	}
 	var err error
-	s.client, err = consul.NewClient(config)
+	s.consul, err = consul.NewClient(config)
 	if err != nil {
 		return s, fmt.Errorf("error creating consul client: %v", err)
 	}
@@ -67,7 +69,7 @@ func (s Service) Start() {
 
 func (s Service) Shutdown() error {
 	// attempt to deregister service on shutdown
-	if err := s.client.Agent().ServiceDeregister(s.id); err != nil {
+	if err := s.consul.Agent().ServiceDeregister(s.id); err != nil {
 		return fmt.Errorf("error deregistering service from consul: %v", err)
 	}
 
@@ -103,12 +105,12 @@ func (s Service) registerConsulService() error {
 	}
 
 	// attempt to register new service with local consul agent
-	return s.client.Agent().ServiceRegister(svc)
+	return s.consul.Agent().ServiceRegister(svc)
 }
 
 // registerConsulLeader attempts to aquire a lock session with a unique id
 func (s Service) registerConsulLeader() error {
-	sessionID, _, err := s.client.Session().Create(&consul.SessionEntry{
+	sessionID, _, err := s.consul.Session().Create(&consul.SessionEntry{
 		Name:     fmt.Sprintf("service/%s/leader", svcName),
 		Behavior: "delete",
 		TTL:      "10s",
@@ -119,7 +121,7 @@ func (s Service) registerConsulLeader() error {
 
 	done := make(chan struct{})
 	go func() {
-		if err := s.client.Session().RenewPeriodic("10s", sessionID, nil, done); err != nil {
+		if err := s.consul.Session().RenewPeriodic("10s", sessionID, nil, done); err != nil {
 			log.Printf("error renewing lock session: %v", err)
 			s.stop <- os.Kill
 			return
@@ -128,7 +130,7 @@ func (s Service) registerConsulLeader() error {
 
 	go func() {
 		for {
-			leader, _, err := s.client.KV().Acquire(&consul.KVPair{
+			leader, _, err := s.consul.KV().Acquire(&consul.KVPair{
 				Key:     fmt.Sprintf("service/%s/leader", svcName),
 				Value:   []byte(s.id),
 				Session: sessionID,
@@ -151,9 +153,10 @@ func (s Service) registerConsulLeader() error {
 	return nil
 }
 
+// getRegisteredConsulServices periodically polls the Consul catalog for new services.
 func (s Service) getRegisteredConsulServices() {
 	go func() {
-		catalog := s.client.Catalog()
+		catalog := s.consul.Catalog()
 
 		for {
 			opts := &consul.QueryOptions{}
