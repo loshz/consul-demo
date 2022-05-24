@@ -21,7 +21,18 @@ FROM alpine:3.15
 # Install 3rd party dependencies
 RUN apk --no-cache add ca-certificates curl
 
+ARG USER=consul-demo
+
+# Create group (-g/-G) and system user (-S)
+# with specific UID (-u) and no password (-D)
+RUN addgroup -g 2000 -S $USER \
+  && adduser -G $USER -S -D -u 2000 $USER
+
 # Copy operator binary from build stage 0
-COPY --from=0 /go/bin/consul-demo /bin/
+COPY --from=0 --chown=$USER /go/bin/consul-demo /bin/
+
+WORKDIR /home/$USER
+
+USER $USER
 
 ENTRYPOINT ["consul-demo"]
