@@ -31,18 +31,17 @@ type Service struct {
 }
 
 func NewService(id string, port int, stop chan os.Signal) (Service, error) {
+	id = fmt.Sprintf("%s-%s", svcName, id)
+
 	s := Service{
-		id:   fmt.Sprintf("%s-%s", svcName, id),
+		id:   id,
 		addr: fmt.Sprintf("http://%v:%v", id, port),
 		stop: stop,
 	}
 
 	// configure consul client
-	config := &consul.Config{
-		Address: ConsulAgentAddr,
-	}
 	var err error
-	s.consul, err = consul.NewClient(config)
+	s.consul, err = NewConsul()
 	if err != nil {
 		return s, fmt.Errorf("error creating consul client: %v", err)
 	}
@@ -69,7 +68,7 @@ func (s Service) Start() {
 
 func (s Service) Shutdown() error {
 	// attempt to deregister service on shutdown
-	if err := s.consul.Agent().ServiceDeregister(s.id); err != nil {
+	if err := s.consul.AgentServiceDeregister(s.id); err != nil {
 		return fmt.Errorf("error deregistering service from consul: %v", err)
 	}
 
@@ -105,12 +104,12 @@ func (s Service) registerConsulService() error {
 	}
 
 	// attempt to register new service with local consul agent
-	return s.consul.Agent().ServiceRegister(svc)
+	return s.consul.AgentServiceRegister(svc)
 }
 
 // registerConsulLeader attempts to aquire a lock session with a unique id
 func (s Service) registerConsulLeader() error {
-	sessionID, _, err := s.consul.Session().Create(&consul.SessionEntry{
+	sessionID, _, err := s.consul.SessionCreate(&consul.SessionEntry{
 		Name:     fmt.Sprintf("service/%s/leader", svcName),
 		Behavior: "delete",
 		TTL:      "10s",
@@ -121,7 +120,7 @@ func (s Service) registerConsulLeader() error {
 
 	done := make(chan struct{})
 	go func() {
-		if err := s.consul.Session().RenewPeriodic("10s", sessionID, nil, done); err != nil {
+		if err := s.consul.SessionRenewPeriodic("10s", sessionID, nil, done); err != nil {
 			log.Printf("error renewing lock session: %v", err)
 			s.stop <- os.Kill
 			return
@@ -130,7 +129,7 @@ func (s Service) registerConsulLeader() error {
 
 	go func() {
 		for {
-			leader, _, err := s.consul.KV().Acquire(&consul.KVPair{
+			leader, _, err := s.consul.KVAcquire(&consul.KVPair{
 				Key:     fmt.Sprintf("service/%s/leader", svcName),
 				Value:   []byte(s.id),
 				Session: sessionID,
@@ -156,18 +155,16 @@ func (s Service) registerConsulLeader() error {
 // getRegisteredConsulServices periodically polls the Consul catalog for new services.
 func (s Service) getRegisteredConsulServices() {
 	go func() {
-		catalog := s.consul.Catalog()
-
 		for {
 			opts := &consul.QueryOptions{}
-			svcs, _, err := catalog.Services(opts)
+			svcs, _, err := s.consul.CatalogServices(opts)
 			if err != nil {
 				log.Println("failed to get service catalog, will retry")
 			}
 
 			for svc := range svcs {
 				if svc == svcName {
-					catSvcs, _, err := catalog.Service(svc, "", opts)
+					catSvcs, _, err := s.consul.CatalogService(svc, "", opts)
 					if err != nil {
 						log.Printf("failed to get service details: %s", err)
 						continue
