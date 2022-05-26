@@ -22,7 +22,7 @@ type ConsulClient interface {
 
 	// Wrapper around client.Session()
 	SessionCreate(*consul.SessionEntry, *consul.WriteOptions) (string, *consul.WriteMeta, error)
-	SessionRenewPeriodic(initialTTL, id string, opts *consul.WriteOptions, doneCh <-chan struct{}) error
+	SessionRenew(id string, opts *consul.WriteOptions) (*consul.SessionEntry, *consul.WriteMeta, error)
 }
 
 type Consul struct {
@@ -65,6 +65,6 @@ func (c Consul) SessionCreate(sess *consul.SessionEntry, opts *consul.WriteOptio
 	return c.client.Session().Create(sess, opts)
 }
 
-func (c Consul) SessionRenewPeriodic(ttl, id string, opts *consul.WriteOptions, doneCh <-chan struct{}) error {
-	return c.client.Session().RenewPeriodic(ttl, id, opts, doneCh)
+func (c Consul) SessionRenew(id string, opts *consul.WriteOptions) (*consul.SessionEntry, *consul.WriteMeta, error) {
+	return c.client.Session().Renew(id, opts)
 }

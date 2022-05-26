@@ -28,8 +28,12 @@ type Service struct {
 
 	// Channel for sending stop commands.
 	stop chan os.Signal
+
+	// Context used to control active goroutines.
+	cancel context.CancelFunc
 }
 
+// NewService configures a Service Consul client and local HTTP server for health checks.
 func NewService(id string, port int, stop chan os.Signal) (Service, error) {
 	id = fmt.Sprintf("%s-%s", svcName, id)
 
@@ -52,21 +56,29 @@ func NewService(id string, port int, stop chan os.Signal) (Service, error) {
 	return s, nil
 }
 
+// Start service registration, leader election and service discovery in the background.
 func (s Service) Start() {
+	ctx, cancel := context.WithCancel(context.Background())
+	s.cancel = cancel
+
 	// attempt to register new service with local consul agent
 	if err := s.registerConsulService(); err != nil {
 		log.Fatalf("error registering service with consul: %v", err)
 	}
 
 	// attempt to register as leader and start background tasks
-	if err := s.registerConsulLeader(); err != nil {
+	if err := s.registerConsulLeader(ctx); err != nil {
 		log.Fatalf("error registering service as leader: %v", err)
 	}
 
-	s.getRegisteredConsulServices()
+	s.getRegisteredConsulServices(ctx)
 }
 
+// Shutdown the background tasks gracefully.
 func (s Service) Shutdown() error {
+	// Signal that goroutines started by the service should be cancelled.
+	s.cancel()
+
 	// attempt to deregister service on shutdown
 	if err := s.consul.AgentServiceDeregister(s.id); err != nil {
 		return fmt.Errorf("error deregistering service from consul: %v", err)
@@ -83,7 +95,7 @@ func (s Service) Shutdown() error {
 }
 
 // registerConsulService attempts to register a service and health check
-// with a local consul agent
+// with a local consul agent.
 func (s Service) registerConsulService() error {
 	// create consul api service
 	svc := &consul.AgentServiceRegistration{
@@ -107,45 +119,59 @@ func (s Service) registerConsulService() error {
 	return s.consul.AgentServiceRegister(svc)
 }
 
-// registerConsulLeader attempts to aquire a lock session with a unique id
-func (s Service) registerConsulLeader() error {
+// registerConsulLeader attempts to aquire a lock session with a unique id.
+func (s Service) registerConsulLeader(ctx context.Context) error {
 	sessionID, _, err := s.consul.SessionCreate(&consul.SessionEntry{
 		Name:     fmt.Sprintf("service/%s/leader", svcName),
-		Behavior: "delete",
-		TTL:      "10s",
+		Behavior: consul.SessionBehaviorDelete,
+		TTL:      "60s",
 	}, nil)
 	if err != nil {
 		return err
 	}
 
-	done := make(chan struct{})
+	t := time.NewTicker(30 * time.Second)
 	go func() {
-		if err := s.consul.SessionRenewPeriodic("10s", sessionID, nil, done); err != nil {
-			log.Printf("error renewing lock session: %v", err)
-			s.stop <- os.Kill
-			return
-		}
-	}()
+		// Keep track of the current Session ID.
+		sID := sessionID
 
-	go func() {
 		for {
-			leader, _, err := s.consul.KVAcquire(&consul.KVPair{
-				Key:     fmt.Sprintf("service/%s/leader", svcName),
-				Value:   []byte(s.id),
-				Session: sessionID,
-			}, nil)
-			if err != nil {
-				log.Printf("error acquiring lock: %v", err)
-				close(done)
-				s.stop <- os.Kill
+			select {
+			case <-t.C:
+				// Attempt to renew the session before acquiring the lock.
+				session, _, err := s.consul.SessionRenew(sID, nil)
+				if err != nil {
+					log.Printf("error renewing leader session: %v", err)
+					s.stop <- os.Kill
+					return
+				}
+
+				// Check if the session exists.
+				if session == nil {
+					log.Printf("error: session does not exist")
+					continue
+				}
+				sID = session.ID
+
+				leader, _, err := s.consul.KVAcquire(&consul.KVPair{
+					Key:     fmt.Sprintf("service/%s/leader", svcName),
+					Value:   []byte(s.id),
+					Session: sID,
+				}, nil)
+				if err != nil {
+					log.Printf("error acquiring lock: %v", err)
+					s.stop <- os.Kill
+					return
+				}
+
+				if leader {
+					log.Println("lock acquired, registered as leader")
+				}
+			case <-ctx.Done():
+				// Exit this goroutine during service shutdown in order to
+				// free resources.
 				return
 			}
-
-			if leader {
-				log.Println("lock acquired, registered as leader")
-			}
-
-			time.Sleep(10 * time.Second)
 		}
 	}()
 
@@ -153,32 +179,39 @@ func (s Service) registerConsulLeader() error {
 }
 
 // getRegisteredConsulServices periodically polls the Consul catalog for new services.
-func (s Service) getRegisteredConsulServices() {
+func (s Service) getRegisteredConsulServices(ctx context.Context) {
+	t := time.NewTicker(30 * time.Second)
+
 	go func() {
 		for {
-			opts := &consul.QueryOptions{}
-			svcs, _, err := s.consul.CatalogServices(opts)
-			if err != nil {
-				log.Println("failed to get service catalog, will retry")
-			}
+			select {
+			case <-t.C:
+				opts := &consul.QueryOptions{}
+				svcs, _, err := s.consul.CatalogServices(opts)
+				if err != nil {
+					log.Println("failed to get service catalog, will retry")
+				}
 
-			for svc := range svcs {
-				if svc == svcName {
-					catSvcs, _, err := s.consul.CatalogService(svc, "", opts)
-					if err != nil {
-						log.Printf("failed to get service details: %s", err)
-						continue
-					}
+				for svc := range svcs {
+					if svc == svcName {
+						catSvcs, _, err := s.consul.CatalogService(svc, "", opts)
+						if err != nil {
+							log.Printf("failed to get service details: %s", err)
+							continue
+						}
 
-					for _, catSvc := range catSvcs {
-						if catSvc.ServiceID != s.id {
-							log.Printf("discovered new service: %s", catSvc.ServiceID)
+						for _, catSvc := range catSvcs {
+							if catSvc.ServiceID != s.id {
+								log.Printf("discovered new service: %s", catSvc.ServiceID)
+							}
 						}
 					}
 				}
+			case <-ctx.Done():
+				// Exit this goroutine during service shutdown in order to
+				// free resources.
+				return
 			}
-
-			time.Sleep(30 * time.Second)
 		}
 	}()
 }
