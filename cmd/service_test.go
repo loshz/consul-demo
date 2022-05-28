@@ -40,16 +40,18 @@ func (m mockConsulClient) SessionRenew(id string, opts *consul.WriteOptions) (*c
 }
 
 func TestRegisterConsulService(t *testing.T) {
+	// Configure a generic service.
+	svc := Service{
+		id:   "test",
+		addr: "http://localhost:6000",
+	}
+
+	// Assert that an error during service registration is handled.
 	t.Run("TestRegisterError", func(t *testing.T) {
-		consul := mockConsulClient{
+		svc.consul = mockConsulClient{
 			ServiceRegisterFn: func(*consul.AgentServiceRegistration) error {
 				return fmt.Errorf("register error")
 			},
-		}
-		svc := Service{
-			id:     "test",
-			addr:   "http://localhost:6000",
-			consul: consul,
 		}
 
 		if err := svc.registerConsulService(); err == nil {
@@ -57,16 +59,12 @@ func TestRegisterConsulService(t *testing.T) {
 		}
 	})
 
+	// Assert that a successful service registration results in no errors.
 	t.Run("TestRegisterSuccess", func(t *testing.T) {
-		consul := mockConsulClient{
+		svc.consul = mockConsulClient{
 			ServiceRegisterFn: func(*consul.AgentServiceRegistration) error {
 				return nil
 			},
-		}
-		svc := Service{
-			id:     "test",
-			addr:   "http://localhost:6000",
-			consul: consul,
 		}
 
 		if err := svc.registerConsulService(); err != nil {
