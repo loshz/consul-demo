@@ -11,7 +11,11 @@ import (
 	consul "github.com/hashicorp/consul/api"
 )
 
-const svcName = "consul-demo"
+const (
+	svcName = "consul-demo"
+
+	defaultTickDuration = 30 * time.Second
+)
 
 type Service struct {
 	// Unique Service ID.
@@ -67,11 +71,11 @@ func (s Service) Start() {
 	}
 
 	// attempt to register as leader and start background tasks
-	if err := s.registerConsulLeader(ctx); err != nil {
+	if err := s.registerConsulLeader(ctx, defaultTickDuration); err != nil {
 		log.Fatalf("error registering service as leader: %v", err)
 	}
 
-	s.getRegisteredConsulServices(ctx)
+	s.getRegisteredConsulServices(ctx, defaultTickDuration)
 }
 
 // Shutdown the background tasks gracefully.
@@ -120,7 +124,7 @@ func (s Service) registerConsulService() error {
 }
 
 // registerConsulLeader attempts to aquire a lock session with a unique id.
-func (s Service) registerConsulLeader(ctx context.Context) error {
+func (s Service) registerConsulLeader(ctx context.Context, dur time.Duration) error {
 	sessionID, _, err := s.consul.SessionCreate(&consul.SessionEntry{
 		Name:     fmt.Sprintf("service/%s/leader", svcName),
 		Behavior: consul.SessionBehaviorDelete,
@@ -130,43 +134,45 @@ func (s Service) registerConsulLeader(ctx context.Context) error {
 		return err
 	}
 
-	t := time.NewTicker(30 * time.Second)
+	t := time.NewTicker(dur)
 	go func() {
 		// Keep track of the current Session ID.
 		sID := sessionID
 
 		for {
+			// Attempt to renew the session before acquiring the lock.
+			session, _, err := s.consul.SessionRenew(sID, nil)
+			if err != nil {
+				log.Printf("error renewing leader session: %v", err)
+				s.stop <- os.Kill
+				return
+			}
+
+			// Check if the session exists.
+			if session == nil {
+				log.Printf("error: session does not exist")
+				continue
+			}
+			sID = session.ID
+
+			leader, _, err := s.consul.KVAcquire(&consul.KVPair{
+				Key:     fmt.Sprintf("service/%s/leader", svcName),
+				Value:   []byte(s.id),
+				Session: sID,
+			}, nil)
+			if err != nil {
+				log.Printf("error acquiring lock: %v", err)
+				s.stop <- os.Kill
+				return
+			}
+
+			if leader {
+				log.Println("lock acquired, registered as leader")
+			}
+
 			select {
 			case <-t.C:
-				// Attempt to renew the session before acquiring the lock.
-				session, _, err := s.consul.SessionRenew(sID, nil)
-				if err != nil {
-					log.Printf("error renewing leader session: %v", err)
-					s.stop <- os.Kill
-					return
-				}
-
-				// Check if the session exists.
-				if session == nil {
-					log.Printf("error: session does not exist")
-					continue
-				}
-				sID = session.ID
-
-				leader, _, err := s.consul.KVAcquire(&consul.KVPair{
-					Key:     fmt.Sprintf("service/%s/leader", svcName),
-					Value:   []byte(s.id),
-					Session: sID,
-				}, nil)
-				if err != nil {
-					log.Printf("error acquiring lock: %v", err)
-					s.stop <- os.Kill
-					return
-				}
-
-				if leader {
-					log.Println("lock acquired, registered as leader")
-				}
+				continue
 			case <-ctx.Done():
 				// Exit this goroutine during service shutdown in order to
 				// free resources.
@@ -179,9 +185,8 @@ func (s Service) registerConsulLeader(ctx context.Context) error {
 }
 
 // getRegisteredConsulServices periodically polls the Consul catalog for new services.
-func (s Service) getRegisteredConsulServices(ctx context.Context) {
-	t := time.NewTicker(30 * time.Second)
-
+func (s Service) getRegisteredConsulServices(ctx context.Context, dur time.Duration) {
+	t := time.NewTicker(dur)
 	go func() {
 		for {
 			select {
