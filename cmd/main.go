@@ -22,20 +22,24 @@ func main() {
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
 
 	// Configure a new service and start background tasks.
-	svc, err := NewService(*id, *port, stop)
+	svc, err := NewService(*id, *port)
 	if err != nil {
 		log.Fatalf("critical service error: %v", err)
 	}
-	svc.Start()
+	svc.Start(defaultTickDuration)
 
-	// wait for a stop signal
-	<-stop
-	log.Println("received stop signal")
+	// Wait for a stop signal or service error.
+	select {
+	case err := <-svc.ErrCh:
+		log.Fatalf("critical service error: %v", err)
+	case <-stop:
+		log.Println("received stop signal")
 
-	// Attempt graceful shutdown.
-	if err := svc.Shutdown(); err != nil {
-		log.Fatalf("critical shutdown error: %v", err)
+		// Attempt graceful shutdown.
+		if err := svc.Shutdown(); err != nil {
+			log.Fatalf("critical shutdown error: %v", err)
+		}
+
+		log.Println("successfully stopped http server and other background tasks")
 	}
-
-	log.Println("successfully stopped http server and other background tasks")
 }

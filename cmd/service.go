@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"os"
 	"time"
 
 	consul "github.com/hashicorp/consul/api"
@@ -30,38 +29,38 @@ type Service struct {
 	// Local HTTP server.
 	server *http.Server
 
-	// Channel for sending stop commands.
-	stop chan os.Signal
-
 	// Context used to control active goroutines.
 	cancel context.CancelFunc
+
+	// Channel for sending runtime errors.
+	ErrCh chan error
 }
 
 // NewService configures a Service Consul client and local HTTP server for health checks.
-func NewService(id string, port int, stop chan os.Signal) (Service, error) {
-	id = fmt.Sprintf("%s-%s", svcName, id)
-
-	s := Service{
-		id:   id,
-		addr: fmt.Sprintf("http://%v:%v", id, port),
-		stop: stop,
+func NewService(id string, port int) (*Service, error) {
+	// Configure consul client.
+	client, err := NewConsul()
+	if err != nil {
+		return nil, fmt.Errorf("error creating consul client: %v", err)
 	}
 
-	// configure consul client
-	var err error
-	s.consul, err = NewConsul()
-	if err != nil {
-		return s, fmt.Errorf("error creating consul client: %v", err)
+	id = fmt.Sprintf("%s-%s", svcName, id)
+
+	s := &Service{
+		id:     id,
+		addr:   fmt.Sprintf("http://%v:%v", id, port),
+		consul: client,
+		ErrCh:  make(chan error, 1),
 	}
 
 	// Start local HTTP server.
-	s.server = NewHTTPServer(port, stop)
+	s.server = NewHTTPServer(port, s.ErrCh)
 
 	return s, nil
 }
 
 // Start service registration, leader election and service discovery in the background.
-func (s Service) Start() {
+func (s *Service) Start(dur time.Duration) {
 	ctx, cancel := context.WithCancel(context.Background())
 	s.cancel = cancel
 
@@ -71,15 +70,15 @@ func (s Service) Start() {
 	}
 
 	// attempt to register as leader and start background tasks
-	if err := s.registerConsulLeader(ctx, defaultTickDuration); err != nil {
+	if err := s.registerConsulLeader(ctx, dur); err != nil {
 		log.Fatalf("error registering service as leader: %v", err)
 	}
 
-	s.getRegisteredConsulServices(ctx, defaultTickDuration)
+	s.getRegisteredConsulServices(ctx, dur)
 }
 
 // Shutdown the background tasks gracefully.
-func (s Service) Shutdown() error {
+func (s *Service) Shutdown() error {
 	// Signal that goroutines started by the service should be cancelled.
 	s.cancel()
 
@@ -100,7 +99,7 @@ func (s Service) Shutdown() error {
 
 // registerConsulService attempts to register a service and health check
 // with a local consul agent.
-func (s Service) registerConsulService() error {
+func (s *Service) registerConsulService() error {
 	// create consul api service
 	svc := &consul.AgentServiceRegistration{
 		Address: s.addr,
@@ -124,7 +123,7 @@ func (s Service) registerConsulService() error {
 }
 
 // registerConsulLeader attempts to aquire a lock session with a unique id.
-func (s Service) registerConsulLeader(ctx context.Context, dur time.Duration) error {
+func (s *Service) registerConsulLeader(ctx context.Context, dur time.Duration) error {
 	sessionID, _, err := s.consul.SessionCreate(&consul.SessionEntry{
 		Name:     fmt.Sprintf("service/%s/leader", svcName),
 		Behavior: consul.SessionBehaviorDelete,
@@ -143,8 +142,7 @@ func (s Service) registerConsulLeader(ctx context.Context, dur time.Duration) er
 			// Attempt to renew the session before acquiring the lock.
 			session, _, err := s.consul.SessionRenew(sID, nil)
 			if err != nil {
-				log.Printf("error renewing leader session: %v", err)
-				s.stop <- os.Kill
+				s.ErrCh <- fmt.Errorf("error renewing leader session: %w", err)
 				return
 			}
 
@@ -161,8 +159,7 @@ func (s Service) registerConsulLeader(ctx context.Context, dur time.Duration) er
 				Session: sID,
 			}, nil)
 			if err != nil {
-				log.Printf("error acquiring lock: %v", err)
-				s.stop <- os.Kill
+				s.ErrCh <- fmt.Errorf("error acquiring lock: %w", err)
 				return
 			}
 
@@ -185,7 +182,7 @@ func (s Service) registerConsulLeader(ctx context.Context, dur time.Duration) er
 }
 
 // getRegisteredConsulServices periodically polls the Consul catalog for new services.
-func (s Service) getRegisteredConsulServices(ctx context.Context, dur time.Duration) {
+func (s *Service) getRegisteredConsulServices(ctx context.Context, dur time.Duration) {
 	t := time.NewTicker(dur)
 	go func() {
 		for {
@@ -195,6 +192,7 @@ func (s Service) getRegisteredConsulServices(ctx context.Context, dur time.Durat
 				svcs, _, err := s.consul.CatalogServices(opts)
 				if err != nil {
 					log.Println("failed to get service catalog, will retry")
+					continue
 				}
 
 				for svc := range svcs {
