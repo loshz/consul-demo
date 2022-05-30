@@ -54,7 +54,7 @@ func NewService(id string, port int) (*Service, error) {
 	}
 
 	// Start local HTTP server.
-	s.server = NewHTTPServer(port, s.ErrCh)
+	s.server = NewHTTPServer(fmt.Sprintf("%s:%d", id, port), s.ErrCh)
 
 	return s, nil
 }
@@ -63,6 +63,9 @@ func NewService(id string, port int) (*Service, error) {
 func (s *Service) Start(dur time.Duration) {
 	ctx, cancel := context.WithCancel(context.Background())
 	s.cancel = cancel
+
+	// Start local HTTP server.
+	s.startHTTP()
 
 	// attempt to register new service with local consul agent
 	if err := s.registerConsulService(); err != nil {
@@ -95,6 +98,17 @@ func (s *Service) Shutdown() error {
 	}
 
 	return nil
+}
+
+func (s *Service) startHTTP() {
+	log.Printf("starting http server, addr: %s", s.addr)
+
+	go func() {
+		if err := s.server.ListenAndServe(); err != nil {
+			s.ErrCh <- fmt.Errorf("encountered critical error from HTTP server: %v", err)
+			return
+		}
+	}()
 }
 
 // registerConsulService attempts to register a service and health check

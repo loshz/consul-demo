@@ -8,23 +8,14 @@ import (
 
 // NewHTTPServer configures a HTTP server with all required handle funcs
 // and their dependencies.
-func NewHTTPServer(port int, errCh chan error) *http.Server {
+func NewHTTPServer(addr string, errCh chan error) *http.Server {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", healthzHandler)
 
 	server := &http.Server{
-		Addr:    fmt.Sprintf(":%v", port),
+		Addr:    addr,
 		Handler: mux,
 	}
-
-	log.Printf("starting http server, addr: localhost:%d", port)
-
-	go func() {
-		if err := server.ListenAndServe(); err != nil {
-			errCh <- fmt.Errorf("encountered critical error from HTTP server: %v", err)
-			return
-		}
-	}()
 
 	return server
 }

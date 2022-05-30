@@ -10,7 +10,7 @@ import (
 
 func main() {
 	id := flag.String("id", "", "Unique service ID")
-	port := flag.Int("port", 6000, "TCP/IP port number the server listens on")
+	port := flag.Int("port", 8001, "TCP/IP port number the server listens on")
 	flag.Parse()
 
 	if id == nil {

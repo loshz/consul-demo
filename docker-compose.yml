@@ -23,17 +23,17 @@ services:
     depends_on:
     - consul-agent
     ports:
-    - 6000:6000
-    command: -id=0 -port=6000
+    - 8001:8001
+    command: -id=0 -port=8001
   
   consul-demo-1:
     <<: *consul-demo
     ports:
-    - 6001:6001
-    command: -id=1 -port=6001
+    - 8002:8002
+    command: -id=1 -port=8002
 
   consul-demo-2:
     <<: *consul-demo
     ports:
-    - 6002:6002
-    command: -id=2 -port=6002
+    - 8003:8003
+    command: -id=2 -port=8003
