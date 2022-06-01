@@ -77,7 +77,7 @@ func (s *Service) Start(dur time.Duration) {
 		log.Fatalf("error registering service as leader: %v", err)
 	}
 
-	go s.getRegisteredConsulServices(ctx, dur)
+	s.getRegisteredConsulServices(ctx, dur)
 }
 
 // Shutdown the background tasks gracefully.
@@ -200,37 +200,39 @@ func (s *Service) registerConsulLeader(ctx context.Context, dur time.Duration) e
 func (s *Service) getRegisteredConsulServices(ctx context.Context, dur time.Duration) {
 	t := time.NewTicker(dur)
 
-	for {
-		select {
-		case <-t.C:
-			// Get a list of all registered services.
-			svcs, _, err := s.consul.CatalogServices(nil)
-			if err != nil {
-				s.ErrCh <- fmt.Errorf("failed to get registered consul services: %w", err)
-				return
-			}
+	go func() {
+		for {
+			select {
+			case <-t.C:
+				// Get a list of all registered services.
+				svcs, _, err := s.consul.CatalogServices(nil)
+				if err != nil {
+					s.ErrCh <- fmt.Errorf("failed to get registered consul services: %w", err)
+					return
+				}
 
-			for svc := range svcs {
-				// Only query services of the same type.
-				if svc == svcName {
-					// Get individual service info.
-					catSvcs, _, err := s.consul.CatalogService(svc, "", nil)
-					if err != nil {
-						s.ErrCh <- fmt.Errorf("failed to get registered consul service details: %w", err)
-						return
-					}
+				for svc := range svcs {
+					// Only query services of the same type.
+					if svc == svcName {
+						// Get individual service info.
+						catSvcs, _, err := s.consul.CatalogService(svc, "", nil)
+						if err != nil {
+							s.ErrCh <- fmt.Errorf("failed to get registered consul service details: %w", err)
+							return
+						}
 
-					for _, catSvc := range catSvcs {
-						if catSvc.ServiceID != s.id && catSvc.Checks.AggregatedStatus() == consul.HealthPassing {
-							log.Printf("discovered new service: %s", catSvc.ServiceID)
+						for _, catSvc := range catSvcs {
+							if catSvc.ServiceID != s.id && catSvc.Checks.AggregatedStatus() == consul.HealthPassing {
+								log.Printf("discovered new service: %s", catSvc.ServiceID)
+							}
 						}
 					}
 				}
+			case <-ctx.Done():
+				// Exit this goroutine during service shutdown in order to
+				// free resources.
+				return
 			}
-		case <-ctx.Done():
-			// Exit this goroutine during service shutdown in order to
-			// free resources.
-			return
 		}
-	}
+	}()
 }
