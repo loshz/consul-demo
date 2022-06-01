@@ -49,10 +49,7 @@ func (m mockConsulClient) SessionRenew(string, *consul.WriteOptions) (*consul.Se
 
 func TestRegisterConsulService(t *testing.T) {
 	// Configure a generic service.
-	svc := Service{
-		id:   "test",
-		addr: "http://localhost:8001",
-	}
+	svc, _ := NewService("test", 8001)
 
 	// Assert that an error during service registration is handled.
 	t.Run("TestRegisterError", func(t *testing.T) {
@@ -83,10 +80,7 @@ func TestRegisterConsulService(t *testing.T) {
 
 func TestRegisterConsulLeader(t *testing.T) {
 	// Configure a generic service.
-	svc := Service{
-		id:    "test",
-		ErrCh: make(chan error, 1),
-	}
+	svc, _ := NewService("test", 8001)
 
 	t.Run("TestSessionCreateError", func(t *testing.T) {
 		svc.consul = mockConsulClient{
@@ -144,10 +138,7 @@ func TestRegisterConsulLeader(t *testing.T) {
 
 func TestGetRegisteredConsulServices(t *testing.T) {
 	// Configure a generic service.
-	svc := Service{
-		id:    "test",
-		ErrCh: make(chan error, 1),
-	}
+	svc, _ := NewService("test", 8001)
 
 	// Mocked Consul services.
 	svcs := map[string][]string{
@@ -213,11 +204,7 @@ func TestGetRegisteredConsulServices(t *testing.T) {
 
 func TestStartSuccess(t *testing.T) {
 	// Configure a generic service.
-	svc := Service{
-		id:    "test",
-		addr:  "http://localhost:8001",
-		ErrCh: make(chan error, 1),
-	}
+	svc, _ := NewService("test", 8001)
 
 	svc.consul = mockConsulClient{
 		ServiceRegisterFn: func() error {
