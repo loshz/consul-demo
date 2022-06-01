@@ -77,7 +77,7 @@ func (s *Service) Start(dur time.Duration) {
 		log.Fatalf("error registering service as leader: %v", err)
 	}
 
-	s.getRegisteredConsulServices(ctx, dur)
+	go s.getRegisteredConsulServices(ctx, dur)
 }
 
 // Shutdown the background tasks gracefully.
@@ -125,9 +125,9 @@ func (s *Service) registerConsulService() error {
 		},
 		Check: &consul.AgentServiceCheck{
 			Interval: "5s",
-			HTTP:     fmt.Sprintf("%v/healthz", s.addr),
+			HTTP:     fmt.Sprintf("%s%s", s.addr, healthzURI),
 			Method:   http.MethodGet,
-			Name:     "/healthz",
+			Name:     healthzURI,
 			Timeout:  "1s",
 		},
 	}
@@ -195,40 +195,42 @@ func (s *Service) registerConsulLeader(ctx context.Context, dur time.Duration) e
 	return nil
 }
 
-// getRegisteredConsulServices periodically polls the Consul catalog for new services.
+// getRegisteredConsulServices periodically polls the Consul catalog for registered services.
+// It will only return services with passing health checks.
 func (s *Service) getRegisteredConsulServices(ctx context.Context, dur time.Duration) {
 	t := time.NewTicker(dur)
-	go func() {
-		for {
-			select {
-			case <-t.C:
-				opts := &consul.QueryOptions{}
-				svcs, _, err := s.consul.CatalogServices(opts)
-				if err != nil {
-					log.Println("failed to get service catalog, will retry")
-					continue
-				}
 
-				for svc := range svcs {
-					if svc == svcName {
-						catSvcs, _, err := s.consul.CatalogService(svc, "", opts)
-						if err != nil {
-							log.Printf("failed to get service details: %s", err)
-							continue
-						}
+	for {
+		select {
+		case <-t.C:
+			// Get a list of all registered services.
+			svcs, _, err := s.consul.CatalogServices(nil)
+			if err != nil {
+				s.ErrCh <- fmt.Errorf("failed to get registered consul services: %w", err)
+				return
+			}
 
-						for _, catSvc := range catSvcs {
-							if catSvc.ServiceID != s.id {
-								log.Printf("discovered new service: %s", catSvc.ServiceID)
-							}
+			for svc := range svcs {
+				// Only query services of the same type.
+				if svc == svcName {
+					// Get individual service info.
+					catSvcs, _, err := s.consul.CatalogService(svc, "", nil)
+					if err != nil {
+						s.ErrCh <- fmt.Errorf("failed to get registered consul service details: %w", err)
+						return
+					}
+
+					for _, catSvc := range catSvcs {
+						if catSvc.ServiceID != s.id && catSvc.Checks.AggregatedStatus() == consul.HealthPassing {
+							log.Printf("discovered new service: %s", catSvc.ServiceID)
 						}
 					}
 				}
-			case <-ctx.Done():
-				// Exit this goroutine during service shutdown in order to
-				// free resources.
-				return
 			}
+		case <-ctx.Done():
+			// Exit this goroutine during service shutdown in order to
+			// free resources.
+			return
 		}
-	}()
+	}
 }

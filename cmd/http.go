@@ -6,11 +6,13 @@ import (
 	"net/http"
 )
 
+const healthzURI = "/healthz"
+
 // NewHTTPServer configures a HTTP server with all required handle funcs
 // and their dependencies.
 func NewHTTPServer(addr string, errCh chan error) *http.Server {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/healthz", healthzHandler)
+	mux.HandleFunc(healthzURI, healthzHandler)
 
 	server := &http.Server{
 		Addr:    addr,

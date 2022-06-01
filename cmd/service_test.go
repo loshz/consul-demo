@@ -11,51 +11,53 @@ import (
 )
 
 type mockConsulClient struct {
-	ServiceRegisterFn func(*consul.AgentServiceRegistration) error
-	SessionCreateFn   func(*consul.SessionEntry, *consul.WriteOptions) (string, *consul.WriteMeta, error)
-	SessionRenewFn    func(string, *consul.WriteOptions) (*consul.SessionEntry, *consul.WriteMeta, error)
-	KVAcquireFn       func(*consul.KVPair, *consul.WriteOptions) (bool, *consul.WriteMeta, error)
+	ServiceRegisterFn func() error
+	CatalogServiceFn  func() ([]*consul.CatalogService, *consul.QueryMeta, error)
+	CatalogServicesFn func() (map[string][]string, *consul.QueryMeta, error)
+	KVAcquireFn       func() (bool, *consul.WriteMeta, error)
+	SessionCreateFn   func() (string, *consul.WriteMeta, error)
+	SessionRenewFn    func() (*consul.SessionEntry, *consul.WriteMeta, error)
 }
 
 func (m mockConsulClient) AgentServiceDeregister(id string) error {
 	return nil
 }
 
-func (m mockConsulClient) AgentServiceRegister(svc *consul.AgentServiceRegistration) error {
-	return m.ServiceRegisterFn(svc)
+func (m mockConsulClient) AgentServiceRegister(*consul.AgentServiceRegistration) error {
+	return m.ServiceRegisterFn()
 }
 
 func (m mockConsulClient) CatalogService(service, tag string, opts *consul.QueryOptions) ([]*consul.CatalogService, *consul.QueryMeta, error) {
-	return nil, nil, nil
+	return m.CatalogServiceFn()
 }
 
-func (m mockConsulClient) CatalogServices(opts *consul.QueryOptions) (map[string][]string, *consul.QueryMeta, error) {
-	return nil, nil, nil
+func (m mockConsulClient) CatalogServices(*consul.QueryOptions) (map[string][]string, *consul.QueryMeta, error) {
+	return m.CatalogServicesFn()
 }
 
-func (m mockConsulClient) KVAcquire(kv *consul.KVPair, opts *consul.WriteOptions) (bool, *consul.WriteMeta, error) {
-	return m.KVAcquireFn(kv, opts)
+func (m mockConsulClient) KVAcquire(*consul.KVPair, *consul.WriteOptions) (bool, *consul.WriteMeta, error) {
+	return m.KVAcquireFn()
 }
 
-func (m mockConsulClient) SessionCreate(sess *consul.SessionEntry, opts *consul.WriteOptions) (string, *consul.WriteMeta, error) {
-	return m.SessionCreateFn(sess, opts)
+func (m mockConsulClient) SessionCreate(*consul.SessionEntry, *consul.WriteOptions) (string, *consul.WriteMeta, error) {
+	return m.SessionCreateFn()
 }
 
-func (m mockConsulClient) SessionRenew(id string, opts *consul.WriteOptions) (*consul.SessionEntry, *consul.WriteMeta, error) {
-	return m.SessionRenewFn(id, opts)
+func (m mockConsulClient) SessionRenew(string, *consul.WriteOptions) (*consul.SessionEntry, *consul.WriteMeta, error) {
+	return m.SessionRenewFn()
 }
 
 func TestRegisterConsulService(t *testing.T) {
 	// Configure a generic service.
 	svc := Service{
 		id:   "test",
-		addr: "http://localhost:6000",
+		addr: "http://localhost:8001",
 	}
 
 	// Assert that an error during service registration is handled.
 	t.Run("TestRegisterError", func(t *testing.T) {
 		svc.consul = mockConsulClient{
-			ServiceRegisterFn: func(*consul.AgentServiceRegistration) error {
+			ServiceRegisterFn: func() error {
 				return fmt.Errorf("register error")
 			},
 		}
@@ -68,7 +70,7 @@ func TestRegisterConsulService(t *testing.T) {
 	// Assert that a successful service registration results in no errors.
 	t.Run("TestRegisterSuccess", func(t *testing.T) {
 		svc.consul = mockConsulClient{
-			ServiceRegisterFn: func(*consul.AgentServiceRegistration) error {
+			ServiceRegisterFn: func() error {
 				return nil
 			},
 		}
@@ -88,7 +90,7 @@ func TestRegisterConsulLeader(t *testing.T) {
 
 	t.Run("TestSessionCreateError", func(t *testing.T) {
 		svc.consul = mockConsulClient{
-			SessionCreateFn: func(sess *consul.SessionEntry, opts *consul.WriteOptions) (string, *consul.WriteMeta, error) {
+			SessionCreateFn: func() (string, *consul.WriteMeta, error) {
 				return "", nil, fmt.Errorf("session create error")
 			},
 		}
@@ -102,10 +104,10 @@ func TestRegisterConsulLeader(t *testing.T) {
 		expected := errors.New("session renew error")
 
 		svc.consul = mockConsulClient{
-			SessionCreateFn: func(sess *consul.SessionEntry, opts *consul.WriteOptions) (string, *consul.WriteMeta, error) {
+			SessionCreateFn: func() (string, *consul.WriteMeta, error) {
 				return "session_id", nil, nil
 			},
-			SessionRenewFn: func(id string, opts *consul.WriteOptions) (*consul.SessionEntry, *consul.WriteMeta, error) {
+			SessionRenewFn: func() (*consul.SessionEntry, *consul.WriteMeta, error) {
 				return nil, nil, expected
 			},
 		}
@@ -121,13 +123,13 @@ func TestRegisterConsulLeader(t *testing.T) {
 		expected := errors.New("kv acquire error")
 
 		svc.consul = mockConsulClient{
-			SessionCreateFn: func(sess *consul.SessionEntry, opts *consul.WriteOptions) (string, *consul.WriteMeta, error) {
+			SessionCreateFn: func() (string, *consul.WriteMeta, error) {
 				return "session_id", nil, nil
 			},
-			SessionRenewFn: func(id string, opts *consul.WriteOptions) (*consul.SessionEntry, *consul.WriteMeta, error) {
+			SessionRenewFn: func() (*consul.SessionEntry, *consul.WriteMeta, error) {
 				return &consul.SessionEntry{ID: "test"}, nil, nil
 			},
-			KVAcquireFn: func(*consul.KVPair, *consul.WriteOptions) (bool, *consul.WriteMeta, error) {
+			KVAcquireFn: func() (bool, *consul.WriteMeta, error) {
 				return false, nil, expected
 			},
 		}
@@ -140,25 +142,94 @@ func TestRegisterConsulLeader(t *testing.T) {
 	})
 }
 
+func TestGetRegisteredConsulServices(t *testing.T) {
+	// Configure a generic service.
+	svc := Service{
+		id:    "test",
+		ErrCh: make(chan error, 1),
+	}
+
+	// Mocked Consul services.
+	svcs := map[string][]string{
+		svcName: nil,
+	}
+
+	t.Run("TestCatalogServicesError", func(t *testing.T) {
+		svc.consul = mockConsulClient{
+			CatalogServicesFn: func() (map[string][]string, *consul.QueryMeta, error) {
+				return nil, nil, errors.New("catalog services error")
+			},
+		}
+
+		svc.getRegisteredConsulServices(context.TODO(), 1*time.Millisecond)
+
+		if err := <-svc.ErrCh; err == nil {
+			t.Error("expected error getting registered consul services")
+		}
+	})
+
+	t.Run("TestCatalogServiceError", func(t *testing.T) {
+		svc.consul = mockConsulClient{
+			CatalogServicesFn: func() (map[string][]string, *consul.QueryMeta, error) {
+				return svcs, nil, nil
+			},
+			CatalogServiceFn: func() ([]*consul.CatalogService, *consul.QueryMeta, error) {
+				return nil, nil, errors.New("catalog service error")
+			},
+		}
+
+		svc.getRegisteredConsulServices(context.TODO(), 1*time.Millisecond)
+
+		if err := <-svc.ErrCh; err == nil {
+			t.Error("expected error getting registered consul services")
+		}
+	})
+
+	t.Run("TestSuccess", func(t *testing.T) {
+		svc.consul = mockConsulClient{
+			CatalogServicesFn: func() (map[string][]string, *consul.QueryMeta, error) {
+				return svcs, nil, nil
+			},
+			CatalogServiceFn: func() ([]*consul.CatalogService, *consul.QueryMeta, error) {
+				return nil, nil, nil
+			},
+		}
+
+		ctx, cancel := context.WithCancel(context.Background())
+		go func() {
+			// Let the service run a couple of times.
+			time.Sleep(10 * time.Millisecond)
+			cancel()
+		}()
+
+		svc.getRegisteredConsulServices(ctx, 1*time.Millisecond)
+
+		// Assert that no errors where received.
+		if len(svc.ErrCh) > 0 {
+			t.Errorf("expected no errors, got: '%v'", <-svc.ErrCh)
+		}
+	})
+}
+
 func TestStartSuccess(t *testing.T) {
 	// Configure a generic service.
 	svc := Service{
 		id:    "test",
-		addr:  "http://localhost:6000",
+		addr:  "http://localhost:8001",
 		ErrCh: make(chan error, 1),
 	}
 
 	svc.consul = mockConsulClient{
-		ServiceRegisterFn: func(*consul.AgentServiceRegistration) error {
+		ServiceRegisterFn: func() error {
 			return nil
 		},
-		SessionCreateFn: func(sess *consul.SessionEntry, opts *consul.WriteOptions) (string, *consul.WriteMeta, error) {
+		SessionCreateFn: func() (string, *consul.WriteMeta, error) {
 			return "session_id", nil, nil
 		},
-		SessionRenewFn: func(id string, opts *consul.WriteOptions) (*consul.SessionEntry, *consul.WriteMeta, error) {
+		SessionRenewFn: func() (*consul.SessionEntry, *consul.WriteMeta, error) {
 			return &consul.SessionEntry{ID: "test"}, nil, nil
 		},
-		KVAcquireFn: func(*consul.KVPair, *consul.WriteOptions) (bool, *consul.WriteMeta, error) {
+		KVAcquireFn: func() (bool, *consul.WriteMeta, error) {
 			return true, nil, nil
 		},
 	}

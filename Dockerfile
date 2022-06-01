@@ -18,9 +18,6 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /go/bin/consul-demo ./cmd/
 #################
 FROM alpine:3.16
 
-# Install 3rd party dependencies
-RUN apk --no-cache add ca-certificates curl
-
 ARG USER=consul-demo
 
 # Create group (-g/-G) and system user (-S)
